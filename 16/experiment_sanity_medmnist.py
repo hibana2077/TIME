@@ -109,7 +109,7 @@ def save_reproducibility_bundle(out_dir: Path, config: Dict[str, Any]) -> None:
         yaml.safe_dump(config, f, sort_keys=False)
 
     env_lines = [
-        f"timestamp: {datetime.now(datetime.UTC).isoformat()}Z",
+        f"timestamp: {datetime.utcnow().isoformat()}Z",
         f"python: {sys.version}",
         f"platform: {platform.platform()}",
         f"torch: {torch.__version__}",
