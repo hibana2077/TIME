@@ -780,8 +780,8 @@ def paired_ttest(a: np.ndarray, b: np.ndarray) -> Dict[str, float]:
 def main() -> None:
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--out", type=str, default="outputs", help="output root")
-    parser.add_argument("--data-root", type=str, default="data", help="dataset cache root")
+    parser.add_argument("--out", type=str, default="./outputs", help="output root")
+    parser.add_argument("--data-root", type=str, default="./data", help="dataset cache root")
 
     parser.add_argument("--datasets", type=str, default="all", help="comma-separated dataset names, or 'all'")
 
