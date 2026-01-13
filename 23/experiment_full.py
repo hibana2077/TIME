@@ -60,6 +60,12 @@ def get_model():
     
     # Opacus compatibility: Replace BatchNorm with GroupNorm
     model = ModuleValidator.fix(model)
+    
+    # Opacus compatibility: Disable inplace on ReLU to avoid autograd errors with hooks
+    for module in model.modules():
+        if isinstance(module, nn.ReLU):
+            module.inplace = False
+
     return model
 
 def train(model, train_loader, epochs, epsilon, device):
