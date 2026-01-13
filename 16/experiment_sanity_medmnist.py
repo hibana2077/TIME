@@ -152,6 +152,8 @@ def list_medmnist_2d_classification_datasets() -> List[str]:
     names: List[str] = []
     for name, meta in INFO.items():
         # skip 3D datasets
+        if '3d' in name.lower():
+            continue
         if meta.get("n_channels") not in (1, 3):
             continue
         task = meta.get("task")
