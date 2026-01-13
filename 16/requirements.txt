@@ -1,0 +1,15 @@
+torch
+torchvision
+timm
+numpy
+pandas
+matplotlib
+seaborn
+tqdm
+scipy
+pyyaml
+medmnist
+captum
+pytorch-grad-cam
+torchmetrics
+scikit-image
