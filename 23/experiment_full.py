@@ -16,8 +16,8 @@ import copy
 import inspect
 
 # Configuration
-SEEDS = [0, 1, 2]
-EPSILONS = [1.0, 5.0, float('inf')]
+SEEDS = [0, 1, 2, 3, 4]
+EPSILONS = [0.1, 0.5, 1.0, 5.0, float('inf')]
 BATCH_SIZE = 128 # Larger batch size for faster training on full dataset
 EPOCHS = 5      # 10 epochs for full MNIST is enough for reasonable convergence
 LR = 0.01
