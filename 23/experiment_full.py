@@ -13,6 +13,7 @@ from opacus.validators import ModuleValidator
 import os
 from tqdm import tqdm
 import copy
+import inspect
 
 # Configuration
 SEEDS = [0, 1, 2]
@@ -51,73 +52,112 @@ def get_dataloaders(batch_size):
     # Full train loader for attribution (no shuffle, large batch)
     attr_train_loader = DataLoader(train_dataset, batch_size=batch_size*2, shuffle=False)
     
-    return train_loader, test_loader, query_loader, attr_train_loader
+    return train_dataset, test_dataset, train_loader, test_loader, query_loader, attr_train_loader
+
+
+class SimpleCNN(nn.Module):
+    def __init__(self, num_classes: int = 10):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=3, padding=1, bias=False),
+            nn.GroupNorm(8, 32),
+            nn.ReLU(inplace=False),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1, bias=False),
+            nn.GroupNorm(8, 64),
+            nn.ReLU(inplace=False),
+            nn.MaxPool2d(2),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1, bias=False),
+            nn.GroupNorm(8, 128),
+            nn.ReLU(inplace=False),
+            nn.AdaptiveAvgPool2d((1, 1)),
+        )
+        self.classifier = nn.Linear(128, num_classes)
+
+    def forward(self, x):
+        x = self.features(x)
+        x = torch.flatten(x, 1)
+        return self.classifier(x)
 
 def get_model():
-    # Using a small ResNet from timm suitable for 1-channel input
-    # resnet10t or similar is not standard in all timm versions, sticking to resnet18 with modification
-    model = timm.create_model('resnet18', pretrained=False, num_classes=10, in_chans=1)
-    
-    # Opacus compatibility: Replace BatchNorm with GroupNorm
-    model = ModuleValidator.fix(model)
-    
-    # Opacus compatibility: Disable inplace on ReLU to avoid autograd errors with hooks
-    for module in model.modules():
-        if isinstance(module, nn.ReLU):
-            module.inplace = False
+    # NOTE:
+    # Opacus' grad-sample hooks can crash on some models that use in-place residual adds
+    # (e.g. `x += shortcut`). A simple CNN avoids that class of issues.
+    model = SimpleCNN(num_classes=10)
+    return ModuleValidator.fix(model)
 
-    return model
+def _unwrap_module(model: nn.Module) -> nn.Module:
+    return model._module if hasattr(model, "_module") else model
+
+
+def _call_with_supported_kwargs(fn, **kwargs):
+    sig = inspect.signature(fn)
+    supported = {k: v for k, v in kwargs.items() if k in sig.parameters}
+    return fn(**supported)
+
 
 def train(model, train_loader, epochs, epsilon, device):
     model = model.to(device)
     optimizer = optim.SGD(model.parameters(), lr=LR, momentum=0.9)
     criterion = nn.CrossEntropyLoss()
-    
+
     privacy_engine = None
     if epsilon != float('inf'):
         privacy_engine = PrivacyEngine()
-        # make_private specific arguments
-        model, optimizer, train_loader = privacy_engine.make_private(
-            module=model,
-            optimizer=optimizer,
-            data_loader=train_loader,
-            noise_multiplier=1.0, # Initial guess, will be adjusted or we simply target epsilon.
-            max_grad_norm=1.0,
-        )
-        # We need to manually match the target epsilon if we passed noise_multiplier dummy.
-        # But PrivacyEngine usually takes noise_multiplier. 
-        # To target exact epsilon, we usually iterate to find noise_multiplier, 
-        # OR we just train and check epsilon at the end (simplest).
-        # HOWEVER, Opacus 1.x allows make_private_with_epsilon usually? 
-        # Let's stick to standard make_private and just set a reasonable noise for the epsilon target
-        # Or better: use basic params and let the user see the trade-off.
-        # For the sake of the prompt's "Toy Experiment", we strictly want to set epsilon.
-        # But make_private doesn't accept target_epsilon directly in some versions.
-        # We will use a simplified approach: noise_multiplier corresponds to epsilon.
-        # For E=1.0 (High Privacy), noise ~ 1-2. For E=5.0 (Medium), noise ~ 0.5.
-        # To be precise, we'd calculate it. For this Toy Experiment, let's fix noise based on standard presets 
-        # or just report the realized epsilon.
-        # The prompt says "successfully set epsilon=1.0". 
-        # We will proceed with `make_private` generally.
-        pass
+
+        # Prefer the exact-epsilon APIs when available.
+        if hasattr(privacy_engine, "make_private_with_epsilon"):
+            model, optimizer, train_loader = _call_with_supported_kwargs(
+                privacy_engine.make_private_with_epsilon,
+                module=model,
+                optimizer=optimizer,
+                data_loader=train_loader,
+                target_epsilon=epsilon,
+                target_delta=DELTA,
+                epochs=epochs,
+                max_grad_norm=1.0,
+                grad_sample_mode="functorch",
+            )
+        else:
+            # Some Opacus versions support target_epsilon in make_private.
+            try:
+                model, optimizer, train_loader = _call_with_supported_kwargs(
+                    privacy_engine.make_private,
+                    module=model,
+                    optimizer=optimizer,
+                    data_loader=train_loader,
+                    target_epsilon=epsilon,
+                    target_delta=DELTA,
+                    epochs=epochs,
+                    noise_multiplier=1.0,
+                    max_grad_norm=1.0,
+                    grad_sample_mode="functorch",
+                )
+            except TypeError:
+                # Fallback: fixed noise multiplier, report realized epsilon.
+                model, optimizer, train_loader = _call_with_supported_kwargs(
+                    privacy_engine.make_private,
+                    module=model,
+                    optimizer=optimizer,
+                    data_loader=train_loader,
+                    noise_multiplier=1.0,
+                    max_grad_norm=1.0,
+                    grad_sample_mode="functorch",
+                )
 
     model.train()
-    
     for epoch in range(epochs):
         for data, target in train_loader:
             data, target = data.to(device), target.to(device)
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             output = model(data)
             loss = criterion(output, target)
             loss.backward()
             optimizer.step()
-            
-    # If DP, report epsilon
+
     realized_epsilon = float('inf')
-    if privacy_engine:
-         # Calculate epsilon locally
-         realized_epsilon = privacy_engine.get_epsilon(delta=DELTA)
-         print(f"  [DP] Target Epsilon: {epsilon} | Realized Epsilon: {realized_epsilon:.2f}")
+    if privacy_engine is not None:
+        realized_epsilon = privacy_engine.get_epsilon(delta=DELTA)
+        print(f"  [DP] Target Epsilon: {epsilon} | Realized Epsilon: {realized_epsilon:.2f}")
 
     return model, realized_epsilon
 
@@ -144,25 +184,18 @@ def compute_gradient_embeddings(model, loader, device, num_samples=None):
     embeddings = []
     deltas = []
     
-    # We need to hook the input to the last layer (fc)
+    # Hook the input to the *last* Linear layer (works for normal and Opacus-wrapped models)
     features = []
-    def hook_fn(module, input, output):
+
+    def hook_fn(_module, input, _output):
         features.append(input[0].detach().cpu())
-    
-    # ResNet18 last layer is usually 'fc' or 'head' in timm (usually 'fc' for resnet)
-    if hasattr(model, 'fc'):
-        handle = model.fc.register_forward_hook(hook_fn)
-    elif hasattr(model, 'head'): # Some timm models use head
-        handle = model.head.fc.register_forward_hook(hook_fn)
-    elif hasattr(model, '_module'): # Handle Opacus wrapped model
-         if hasattr(model._module, 'fc'):
-             handle = model._module.fc.register_forward_hook(hook_fn)
-         else:
-             # flexible fallback
-             handle = list(model._module.children())[-1].register_forward_hook(hook_fn)
-    else:
-         # Fallback for standard structure
-         handle = list(model.children())[-1].register_forward_hook(hook_fn)
+
+    base = _unwrap_module(model)
+    linear_layers = [(name, m) for name, m in base.named_modules() if isinstance(m, nn.Linear)]
+    if not linear_layers:
+        raise RuntimeError("No nn.Linear layer found to hook for gradient embeddings")
+    _name, last_linear = linear_layers[-1]
+    handle = last_linear.register_forward_hook(hook_fn)
 
     count = 0
     with torch.no_grad():
@@ -230,7 +263,7 @@ def main():
 
     results = []
     
-    train_loader, test_loader, query_loader, attr_train_loader = get_dataloaders(BATCH_SIZE)
+    train_dataset, test_dataset, train_loader, test_loader, query_loader, attr_train_loader = get_dataloaders(BATCH_SIZE)
     
     # Pre-calculate useful info
     print("Data loaded.")
@@ -282,46 +315,13 @@ def main():
                 continue
                 
             print(f"Training DP Model (Target Epsilon {eps})...")
-            # Re-seed to ensure same initialization?? 
-            # Ideally we want to see the effect of DP Training on the SAME initialization.
-            torch.manual_seed(seed) 
+            torch.manual_seed(seed)
             model_dp = get_model()
-            
-            # Adjust noise to reach target epsilon approx.
-            # Opacus 1.x logic:
-            # We use a helper or just hardcode known multipliers for MNIST/10 epochs.
-            # For 10 epochs, delta=1e-5:
-            # eps=1.0 -> noise ~ 1.5
-            # eps=5.0 -> noise ~ 0.8
-            # We will rely on Opacus `make_private` with target_epsilon if available (Opacus >= 1.0)
-            
-            model_dp = model_dp.to(DEVICE)
-            optimizer = optim.SGD(model_dp.parameters(), lr=LR, momentum=0.9)
-            privacy_engine = PrivacyEngine()
-            
-            model_dp, optimizer, train_loader_dp = privacy_engine.make_private(
-                module=model_dp,
-                optimizer=optimizer,
-                data_loader=train_loader,
-                noise_multiplier=1.0, # placeholder
-                max_grad_norm=1.0,
-                target_epsilon=eps,
-                target_delta=DELTA,
-                epochs=EPOCHS
-            )
-            
-            # Train
-            model_dp.train()
-            for epoch in range(EPOCHS):
-                for data, target in train_loader_dp: # DP loader
-                    data, target = data.to(DEVICE), target.to(DEVICE)
-                    optimizer.zero_grad()
-                    output = model_dp(data)
-                    loss = F.cross_entropy(output, target)
-                    loss.backward()
-                    optimizer.step()
-            
-            real_eps = privacy_engine.get_epsilon(DELTA)
+
+            # Fresh loader per DP run (Opacus returns a wrapped loader)
+            train_loader_fresh = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+            model_dp, real_eps = train(model_dp, train_loader_fresh, EPOCHS, eps, DEVICE)
+
             acc_dp = evaluate_accuracy(model_dp, test_loader, DEVICE)
             print(f"DP Accuracy: {acc_dp:.2f}%, Epsilon: {real_eps:.2f}")
             
