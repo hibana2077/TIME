@@ -448,13 +448,73 @@ def robustness_eval(
 
 
 def _find_target_layer_for_cam(model: nn.Module) -> nn.Module:
-    # Best-effort heuristic: pick the last Conv2d.
+    """Best-effort target layer selection for Grad-CAM.
+
+    Goal: pick a late spatial feature layer (usually the last conv feature stage),
+    not the classifier head.
+
+    Priority:
+    1) timm models with feature_info -> last feature module
+    2) common stage containers (layer4/stages/blocks/features)
+    3) fallback: last Conv2d in the whole model
+
+    If your backbone is transformer-like (no Conv2d), Grad-CAM is not applicable
+    without a reshape_transform; we raise a clear error in that case.
+    """
+
+    # 1) Prefer timm's feature_info when available.
+    try:
+        fi = getattr(model, "feature_info", None)
+        if fi is not None and len(fi) > 0:
+            last = fi[-1]
+            module_name = None
+            if isinstance(last, dict):
+                module_name = last.get("module")
+            else:
+                # FeatureInfo supports dict-like indexing in many timm versions
+                try:
+                    module_name = last["module"]  # type: ignore[index]
+                except Exception:
+                    module_name = None
+
+            if module_name:
+                try:
+                    feat_mod = model.get_submodule(module_name)
+                except Exception:
+                    feat_mod = dict(model.named_modules()).get(module_name)
+
+                if feat_mod is not None:
+                    last_conv = None
+                    for _n, m in feat_mod.named_modules():
+                        if isinstance(m, nn.Conv2d):
+                            last_conv = m
+                    return last_conv if last_conv is not None else feat_mod
+    except Exception:
+        pass
+
+    # 2) Try common stage containers.
+    for container_name in ("layer4", "stages", "blocks", "features"):
+        container = getattr(model, container_name, None)
+        if container is None:
+            continue
+        last_conv = None
+        for _n, m in container.named_modules():
+            if isinstance(m, nn.Conv2d):
+                last_conv = m
+        if last_conv is not None:
+            return last_conv
+
+    # 3) Fallback: last Conv2d globally.
     last_conv = None
     for _name, m in model.named_modules():
         if isinstance(m, nn.Conv2d):
             last_conv = m
     if last_conv is None:
-        raise RuntimeError("Could not find a Conv2d layer for Grad-CAM target")
+        raise RuntimeError(
+            "Could not find a Conv2d layer for Grad-CAM target. "
+            "If you are using a transformer-like backbone (e.g., ViT), Grad-CAM requires a reshape_transform "
+            "or a different CAM method that supports non-conv features."
+        )
     return last_conv
 
 
@@ -465,9 +525,8 @@ def attribution_gradcam(
 ) -> torch.Tensor:
     model.eval()
     target_layer = _find_target_layer_for_cam(model)
+    # pytorch-grad-cam expects target_layers as a list.
     cam = GradCAM(model=model, target_layers=[target_layer])
-    # cam expects numpy; but it supports torch inputs in newer versions; to be safe, use numpy.
-    x_np = x.detach().cpu().numpy()
     target_list = [ClassifierOutputTarget(int(t.item())) for t in targets.cpu()]
     grayscale_cam = cam(input_tensor=x, targets=target_list)  # (B,H,W)
     sal = torch.from_numpy(grayscale_cam).float().to(x.device)

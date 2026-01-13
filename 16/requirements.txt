@@ -10,6 +10,6 @@ scipy
 pyyaml
 medmnist
 captum
-pytorch-grad-cam
+pytorch-gradcam
 torchmetrics
 scikit-image
