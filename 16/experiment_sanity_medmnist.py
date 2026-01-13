@@ -109,7 +109,7 @@ def save_reproducibility_bundle(out_dir: Path, config: Dict[str, Any]) -> None:
         yaml.safe_dump(config, f, sort_keys=False)
 
     env_lines = [
-        f"timestamp: {datetime.utcnow().isoformat()}Z",
+        f"timestamp: {datetime.now(datetime.UTC).isoformat()}Z",
         f"python: {sys.version}",
         f"platform: {platform.platform()}",
         f"torch: {torch.__version__}",
@@ -127,9 +127,9 @@ def save_reproducibility_bundle(out_dir: Path, config: Dict[str, Any]) -> None:
 
     # pip freeze-like list (no shell)
     try:
-        import pkg_resources
+        from importlib.metadata import distributions
 
-        pkgs = sorted([f"{d.project_name}=={d.version}" for d in pkg_resources.working_set])
+        pkgs = sorted([f"{d.metadata['Name']}=={d.version}" for d in distributions()])
         write_text(out_dir / "pip_freeze.txt", "\n".join(pkgs) + "\n")
     except Exception as e:
         write_text(out_dir / "pip_freeze.txt", f"Failed to collect packages: {e}\n")
@@ -196,6 +196,8 @@ def build_loaders(
 
     We keep preprocessing in-collate (Torch ops) to avoid PIL dependency mismatches.
     """
+    # Ensure data directory exists before MedMNIST tries to use it
+    ensure_dir(data_root)
 
     info = INFO[dataset_name]
     DataClass = getattr(medmnist, info["python_class"])
