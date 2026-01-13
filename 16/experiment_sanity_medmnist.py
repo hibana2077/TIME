@@ -526,9 +526,13 @@ def attribution_gradcam(
     model.eval()
     target_layer = _find_target_layer_for_cam(model)
     # pytorch-grad-cam expects target_layers as a list.
-    cam = GradCAM(model=model, target_layers=[target_layer])
     target_list = [ClassifierOutputTarget(int(t.item())) for t in targets.cpu()]
-    grayscale_cam = cam(input_tensor=x, targets=target_list)  # (B,H,W)
+
+    # Construct the CAM object once, and then re-use it on many images.
+    # Using the context manager ensures all hooks are released cleanly.
+    with GradCAM(model=model, target_layers=[target_layer]) as cam:
+        # You can also pass aug_smooth=True and eigen_smooth=True, to apply smoothing.
+        grayscale_cam = cam(input_tensor=x, targets=target_list)  # (B,H,W)
     sal = torch.from_numpy(grayscale_cam).float().to(x.device)
     # (B,H,W) -> (B,1,H,W)
     return sal.unsqueeze(1)
