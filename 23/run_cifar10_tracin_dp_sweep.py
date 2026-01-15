@@ -50,7 +50,7 @@ def _parse_eps_list(s: str) -> List[Optional[float]]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="CIFAR-10 + timm ResNet-18 + DP-SGD (Opacus) + TracIn (last-layer) sweep runner"
+        description="CIFAR-10 + timm ResNet-50 (GroupNorm) + DP-SGD (Opacus) + TracIn (last-layer) sweep runner"
     )
     parser.add_argument("--out_dir", type=str, default="runs", help="Output root directory")
     parser.add_argument(
@@ -115,13 +115,13 @@ def main() -> None:
     eps_list = _parse_eps_list(args.epsilons)
     seeds = [int(s.strip()) for s in args.seeds.split(",") if s.strip()]
 
-    run_group = f"cifar10_resnet18_tracin_{_timestamp()}"
+    run_group = f"cifar10_resnet50_gn_tracin_{_timestamp()}"
     group_dir = out_root / run_group
     ensure_dir(group_dir)
 
     config = ExperimentConfig(
         dataset="cifar10",
-        model_name="resnet18",
+        model_name="resnet50_gn",
         num_classes=10,
         epochs=args.epochs,
         batch_size=args.batch_size,
