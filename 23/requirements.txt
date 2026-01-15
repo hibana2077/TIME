@@ -2,7 +2,6 @@ opacus>=1.0.0
 timm
 pandas
 matplotlib
-tqdm
 torch
 torchvision
 numpy

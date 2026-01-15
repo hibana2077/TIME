@@ -99,6 +99,10 @@ def train_one_run(
         for pg in optimizer.param_groups:
             pg["lr"] = lr
 
+        running_loss = 0.0
+        running_acc = 0.0
+        seen = 0
+
         for x, y in trainloader:
             x = x.to(device)
             y = y.to(device)
@@ -108,6 +112,19 @@ def train_one_run(
             loss = loss_fn(logits, y)
             loss.backward()
             optimizer.step()
+
+            bsz = int(y.shape[0])
+            seen += bsz
+            running_loss += float(loss.item()) * bsz
+            running_acc += float(_accuracy(logits, y)) * bsz
+
+        eps_disp = "inf" if epsilon is None else f"{epsilon:g}"
+        avg_loss = running_loss / max(1, seen)
+        avg_acc = running_acc / max(1, seen)
+        print(
+            f"train eps={eps_disp} seed={seed} epoch={epoch}/{config.epochs} "
+            f"lr={lr:.3g} loss={avg_loss:.4f} acc={avg_acc:.4f}"
+        )
 
         if privacy_engine is not None:
             effective_epsilon = privacy_engine.accountant.get_epsilon(delta=config.delta)
