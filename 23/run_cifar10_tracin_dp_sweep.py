@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Subset
-from tqdm import tqdm
 
 from time23.cifar10_data import build_cifar10_dataloaders
 from time23.config import ExperimentConfig

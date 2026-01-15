@@ -8,7 +8,6 @@ import torch.nn as nn
 import torch.optim as optim
 from opacus import PrivacyEngine
 from opacus.accountants.utils import get_noise_multiplier
-from tqdm import tqdm
 
 from time23.config import ExperimentConfig
 from time23.models import build_model
@@ -100,8 +99,7 @@ def train_one_run(
         for pg in optimizer.param_groups:
             pg["lr"] = lr
 
-        pbar = tqdm(trainloader, desc=f"train eps={epsilon} seed={seed} epoch={epoch}", leave=False)
-        for x, y in pbar:
+        for x, y in trainloader:
             x = x.to(device)
             y = y.to(device)
 
@@ -110,8 +108,6 @@ def train_one_run(
             loss = loss_fn(logits, y)
             loss.backward()
             optimizer.step()
-
-            pbar.set_postfix(loss=float(loss.item()), acc=float(_accuracy(logits, y)))
 
         if privacy_engine is not None:
             effective_epsilon = privacy_engine.accountant.get_epsilon(delta=config.delta)

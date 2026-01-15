@@ -6,6 +6,22 @@ import torch.nn as nn
 from opacus.validators import ModuleValidator
 
 
+def _disable_inplace_ops(model: nn.Module) -> int:
+    """Disables in-place ops (e.g., ReLU(inplace=True)).
+
+    Opacus wraps modules with custom autograd Functions for per-sample gradients.
+    In-place ops on views can trigger: "... is a view and is being modified inplace".
+    """
+
+    changed = 0
+    for m in model.modules():
+        inplace = getattr(m, "inplace", None)
+        if isinstance(inplace, bool) and inplace:
+            m.inplace = False
+            changed += 1
+    return changed
+
+
 def build_model(model_name: str, num_classes: int) -> nn.Module:
     model = timm.create_model(model_name, pretrained=False, num_classes=num_classes)
 
@@ -20,6 +36,9 @@ def build_model(model_name: str, num_classes: int) -> nn.Module:
                 "Model still has DP-incompatible modules after fix: "
                 + ", ".join(type(e).__name__ for e in errors_after)
             )
+
+    # Important for Opacus: avoid in-place activations (common in timm ResNets).
+    _disable_inplace_ops(model)
 
     return model
 
