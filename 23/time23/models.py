@@ -3,10 +3,24 @@ from typing import Tuple
 import timm
 import torch
 import torch.nn as nn
+from opacus.validators import ModuleValidator
 
 
 def build_model(model_name: str, num_classes: int) -> nn.Module:
     model = timm.create_model(model_name, pretrained=False, num_classes=num_classes)
+
+    # Opacus DP-SGD cannot train with BatchNorm. Replace unsupported modules (e.g., BN -> GN)
+    # to keep per-sample gradients privacy-safe.
+    errors = ModuleValidator.validate(model, strict=False)
+    if errors:
+        model = ModuleValidator.fix(model)
+        errors_after = ModuleValidator.validate(model, strict=False)
+        if errors_after:
+            raise RuntimeError(
+                "Model still has DP-incompatible modules after fix: "
+                + ", ".join(type(e).__name__ for e in errors_after)
+            )
+
     return model
 
 
