@@ -25,6 +25,7 @@ from time23.metrics import (
     format_ci95,
 )
 from time23.tracin_last_layer import compute_tracin_attributions_last_layer
+from time23.counterfactual import compute_counterfactual_finetune_delta
 from time23.utils import ensure_dir, set_global_seed
 
 
@@ -88,8 +89,22 @@ def main() -> None:
         action="store_true",
         help="Run counterfactual removal test (can be slow).",
     )
+    parser.add_argument(
+        "--counterfactual_mode",
+        type=str,
+        default="proxy",
+        choices=["proxy", "finetune"],
+        help="Counterfactual test mode: proxy (fast) or finetune (removal + head-only fine-tune)",
+    )
     parser.add_argument("--counterfactual_steps", type=int, default=200)
     parser.add_argument("--counterfactual_repeats", type=int, default=5)
+    parser.add_argument("--counterfactual_lr", type=float, default=0.01)
+    parser.add_argument(
+        "--counterfactual_max_queries",
+        type=int,
+        default=20,
+        help="Limit number of queries for finetune mode (0 = all).",
+    )
 
     parser.add_argument("--download", action="store_true", help="Download CIFAR-10 if missing")
 
@@ -123,8 +138,11 @@ def main() -> None:
         topk=args.topk,
         tracin_checkpoints=args.tracin_checkpoints,
         run_counterfactual=args.run_counterfactual,
+        counterfactual_mode=args.counterfactual_mode,
         counterfactual_steps=args.counterfactual_steps,
         counterfactual_repeats=args.counterfactual_repeats,
+        counterfactual_lr=args.counterfactual_lr,
+        counterfactual_max_queries=args.counterfactual_max_queries,
         download=args.download,
     )
 
@@ -230,17 +248,51 @@ def main() -> None:
     # Optional: per-run counterfactual proxy metric
     if config.run_counterfactual:
         cf_values = []
+        cf_top = []
+        cf_rand = []
         for row in df_runs.itertuples(index=False):
             scores = attribs[(float(row.epsilon), int(row.seed))]
-            delta = compute_counterfactual_proxy_delta(
-                attribution_scores=scores,
-                topk=config.topk,
-                repeats=config.counterfactual_repeats,
-                rng_seed=int(row.seed) + 1000,
-            )
-            cf_values.append(delta)
+            if config.counterfactual_mode == "proxy":
+                delta = compute_counterfactual_proxy_delta(
+                    attribution_scores=scores,
+                    topk=config.topk,
+                    repeats=config.counterfactual_repeats,
+                    rng_seed=int(row.seed) + 1000,
+                )
+                cf_values.append(delta)
+                cf_top.append(float("nan"))
+                cf_rand.append(float("nan"))
+            else:
+                run_dir = group_dir / row.run_id
+                ckpt_path = run_dir / "checkpoints" / f"epoch_{config.epochs:03d}.pt"
+                train_subset_ds = Subset(train_ds, train_indices)
+                query_subset_ds = Subset(test_ds, query_indices)
+                res = compute_counterfactual_finetune_delta(
+                    checkpoint_path=ckpt_path,
+                    model_name=config.model_name,
+                    num_classes=config.num_classes,
+                    attribution_scores=scores,
+                    train_subset_ds=train_subset_ds,
+                    query_subset_ds=query_subset_ds,
+                    batch_size=config.batch_size,
+                    num_workers=config.num_workers,
+                    device=config.device,
+                    topk=config.topk,
+                    repeats=config.counterfactual_repeats,
+                    steps=config.counterfactual_steps,
+                    finetune_lr=config.counterfactual_lr,
+                    weight_decay=config.weight_decay,
+                    momentum=config.momentum,
+                    rng_seed=int(row.seed) + 2000,
+                    max_queries=None if config.counterfactual_max_queries == 0 else int(config.counterfactual_max_queries),
+                )
+                cf_values.append(res.delta_mean)
+                cf_top.append(res.effect_top_mean)
+                cf_rand.append(res.effect_rand_mean)
 
         df_runs["counterfactual_delta"] = cf_values
+        df_runs["counterfactual_effect_top"] = cf_top
+        df_runs["counterfactual_effect_rand"] = cf_rand
         df_runs.to_csv(group_dir / "per_run_metrics.csv", index=False)
 
     eps_values = sorted(set(df_runs["epsilon"].astype(float).tolist()))

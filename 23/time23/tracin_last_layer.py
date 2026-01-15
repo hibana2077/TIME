@@ -100,7 +100,12 @@ def compute_tracin_attributions_last_layer(
     total_scores = np.zeros((num_queries, num_train), dtype=np.float32)
 
     for ckpt_path in ckpt_paths:
-        ckpt = torch.load(ckpt_path, map_location="cpu")
+        # PyTorch 2.6 changed torch.load default weights_only=True, which can fail
+        # for our self-generated checkpoints that include non-tensor metadata.
+        try:
+            ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        except TypeError:
+            ckpt = torch.load(ckpt_path, map_location="cpu")
         lr = float(ckpt.get("lr", 1.0))
 
         model = build_model(model_name, num_classes)

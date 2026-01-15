@@ -28,6 +28,20 @@ def forward_features_and_logits(model: nn.Module, x: torch.Tensor) -> Tuple[torc
     return logits, logits
 
 
+@torch.no_grad()
+def extract_pre_logits(model: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    """Extracts the pre-logits representation used by the classifier head."""
+
+    if hasattr(model, "forward_features") and hasattr(model, "forward_head"):
+        feats = model.forward_features(x)
+        pre_logits = model.forward_head(feats, pre_logits=True)
+        return pre_logits.view(pre_logits.shape[0], -1)
+
+    # Fallback: no access; use logits as features
+    logits = model(x)
+    return logits.view(logits.shape[0], -1)
+
+
 def get_classifier_linear(model: nn.Module) -> nn.Linear:
     if hasattr(model, "get_classifier"):
         head = model.get_classifier()

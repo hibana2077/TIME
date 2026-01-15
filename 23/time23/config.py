@@ -26,7 +26,10 @@ class ExperimentConfig:
     tracin_checkpoints: str
 
     run_counterfactual: bool
+    counterfactual_mode: str
     counterfactual_steps: int
     counterfactual_repeats: int
+    counterfactual_lr: float
+    counterfactual_max_queries: int
 
     download: bool
