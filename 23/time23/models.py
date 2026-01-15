@@ -1,9 +1,90 @@
 from typing import Tuple
 
+import types
+
 import timm
 import torch
 import torch.nn as nn
 from opacus.validators import ModuleValidator
+
+
+def _basicblock_forward_no_inplace_add(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore[no-untyped-def]
+    shortcut = x
+
+    x = self.conv1(x)
+    x = self.bn1(x)
+    x = self.drop_block(x)
+    x = self.act1(x)
+    x = self.aa(x)
+
+    x = self.conv2(x)
+    x = self.bn2(x)
+
+    if self.se is not None:
+        x = self.se(x)
+
+    if self.drop_path is not None:
+        x = self.drop_path(x)
+
+    if self.downsample is not None:
+        shortcut = self.downsample(shortcut)
+    x = x + shortcut
+    x = self.act2(x)
+
+    return x
+
+
+def _bottleneck_forward_no_inplace_add(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore[no-untyped-def]
+    shortcut = x
+
+    x = self.conv1(x)
+    x = self.bn1(x)
+    x = self.act1(x)
+
+    x = self.conv2(x)
+    x = self.bn2(x)
+    x = self.drop_block(x)
+    x = self.act2(x)
+    x = self.aa(x)
+
+    x = self.conv3(x)
+    x = self.bn3(x)
+
+    if self.se is not None:
+        x = self.se(x)
+
+    if self.drop_path is not None:
+        x = self.drop_path(x)
+
+    if self.downsample is not None:
+        shortcut = self.downsample(shortcut)
+    x = x + shortcut
+    x = self.act3(x)
+
+    return x
+
+
+def _patch_timm_resnet_inplace_add(model: nn.Module) -> int:
+    """Patch timm ResNet blocks to avoid in-place residual adds.
+
+    Opacus wraps modules with custom autograd Functions for per-sample gradients.
+    timm ResNet blocks use `x += shortcut`, which can trigger:
+    "... is a view and is being modified inplace" when used with Opacus.
+    """
+
+    # Import lazily so non-ResNet models don't require this symbol.
+    from timm.models.resnet import BasicBlock, Bottleneck  # type: ignore
+
+    patched = 0
+    for m in model.modules():
+        if isinstance(m, BasicBlock):
+            m.forward = types.MethodType(_basicblock_forward_no_inplace_add, m)  # type: ignore[method-assign]
+            patched += 1
+        elif isinstance(m, Bottleneck):
+            m.forward = types.MethodType(_bottleneck_forward_no_inplace_add, m)  # type: ignore[method-assign]
+            patched += 1
+
+    return patched
 
 
 def _disable_inplace_ops(model: nn.Module) -> int:
@@ -39,6 +120,9 @@ def build_model(model_name: str, num_classes: int) -> nn.Module:
 
     # Important for Opacus: avoid in-place activations (common in timm ResNets).
     _disable_inplace_ops(model)
+
+    # timm ResNet blocks also use in-place residual adds (x += shortcut), which Opacus can't handle.
+    _patch_timm_resnet_inplace_add(model)
 
     return model
 
